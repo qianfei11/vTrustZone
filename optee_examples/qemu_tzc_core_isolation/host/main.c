@@ -206,5 +206,5 @@ int main(int argc, char *argv[])
 
 	puts("denied cpu read unexpectedly ok");
 	close(fd);
-	return EXIT_SUCCESS;
+	return EXIT_FAILURE;
 }

@@ -119,6 +119,21 @@ static void tzc400_iommu_replay_all(TZC400State *s)
     }
 }
 
+static void tzc400_iommu_invalidate_all(TZC400State *s)
+{
+    IOMMUNotifier *n;
+
+    IOMMU_NOTIFIER_FOREACH(n, &s->upstream) {
+        memory_region_unmap_iommu_notifier_range(n);
+    }
+}
+
+static void tzc400_iommu_reconfigure(TZC400State *s)
+{
+    tzc400_iommu_invalidate_all(s);
+    tzc400_iommu_replay_all(s);
+}
+
 static bool tzc400_region_enabled(TZC400State *s, unsigned region)
 {
     if (region == 0) {
@@ -179,36 +194,33 @@ static void tzc400_record_failure(TZC400State *s, hwaddr addr,
     tzc400_update_irq(s, 0);
 }
 
-static bool tzc400_access_check(TZC400State *s, hwaddr addr,
-                                MemTxAttrs attrs, bool write)
+static IOMMUAccessFlags tzc400_access_perms(TZC400State *s, hwaddr addr,
+                                            MemTxAttrs attrs)
 {
     TZC400Region *region;
     bool secure = tzc400_attrs_are_secure(attrs);
-    bool allowed = false;
 
     if (!(FIELD_EX32(s->gate_keeper, GATE_KEEPER, OR) & BIT(0))) {
-        trace_tzc400_access(addr, secure, attrs.requester_id, write, false);
-        return false;
+        return IOMMU_NONE;
     }
 
     region = tzc400_find_region(s, addr);
     if (!region) {
-        trace_tzc400_access(addr, secure, attrs.requester_id, write, false);
-        return false;
+        return IOMMU_NONE;
     }
 
     if (secure) {
         uint32_t sec = FIELD_EX32(region->attr, REGION_ATTRIBUTES, SEC);
 
-        allowed = write ? (sec & TZC400_SEC_WRITE) : (sec & TZC400_SEC_READ);
+        return IOMMU_ACCESS_FLAG(sec & TZC400_SEC_READ,
+                                 sec & TZC400_SEC_WRITE);
     } else {
-        uint32_t perms = write ? (region->id_access >> 16) : region->id_access;
+        uint32_t nsaid = BIT(attrs.requester_id & 0xf);
+        bool can_read = region->id_access & nsaid;
+        bool can_write = (region->id_access >> 16) & nsaid;
 
-        allowed = perms & BIT(attrs.requester_id & 0xf);
+        return IOMMU_ACCESS_FLAG(can_read, can_write);
     }
-
-    trace_tzc400_access(addr, secure, attrs.requester_id, write, allowed);
-    return allowed;
 }
 
 static bool tzc400_decode_region_reg(hwaddr offset, unsigned *region,
@@ -395,7 +407,7 @@ static MemTxResult tzc400_reg_write(void *opaque, hwaddr addr, uint64_t value,
             return MEMTX_OK;
         }
 
-        tzc400_iommu_replay_all(s);
+        tzc400_iommu_reconfigure(s);
         return MEMTX_OK;
     }
 
@@ -409,7 +421,7 @@ static MemTxResult tzc400_reg_write(void *opaque, hwaddr addr, uint64_t value,
 
         s->gate_keeper = open;
         s->gate_keeper = FIELD_DP32(s->gate_keeper, GATE_KEEPER, OS, open);
-        tzc400_iommu_replay_all(s);
+        tzc400_iommu_reconfigure(s);
         break;
     }
     case A_SPECULATION_CTRL:
@@ -497,6 +509,8 @@ static IOMMUTLBEntry tzc400_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     TZC400State *s = TZC400(container_of(iommu, TZC400State, upstream));
     MemTxAttrs attrs = {};
     bool write = flags & IOMMU_WO;
+    IOMMUAccessFlags requested = flags & IOMMU_RW;
+    IOMMUAccessFlags perm;
     bool allowed;
     hwaddr bus_addr = tzc400_bus_addr(s, addr);
 
@@ -506,8 +520,12 @@ static IOMMUTLBEntry tzc400_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         attrs.requester_id = iommu_idx - TZC400_IOMMU_IDX_NS_BASE;
     }
 
-    allowed = tzc400_access_check(s, bus_addr, attrs, write);
-    if (!allowed) {
+    perm = tzc400_access_perms(s, bus_addr, attrs);
+    allowed = requested ? ((perm & requested) == requested) :
+              (perm != IOMMU_NONE);
+    trace_tzc400_access(bus_addr, tzc400_attrs_are_secure(attrs),
+                        attrs.requester_id, write, allowed);
+    if (!allowed && requested) {
         tzc400_record_failure(s, bus_addr, attrs, write);
     }
 
@@ -516,7 +534,7 @@ static IOMMUTLBEntry tzc400_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         .iova = addr,
         .translated_addr = addr,
         .addr_mask = TARGET_PAGE_SIZE - 1,
-        .perm = allowed ? IOMMU_RW : IOMMU_NONE,
+        .perm = allowed ? perm : IOMMU_NONE,
     };
 }
 

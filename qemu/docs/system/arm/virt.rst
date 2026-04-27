@@ -108,6 +108,18 @@ secure
   Set ``on``/``off`` to enable/disable emulating a guest CPU which implements the
   Arm Security Extensions (TrustZone). The default is ``off``.
 
+tzc400
+  Set ``on``/``off`` to enable/disable an emulated TZC-400 TrustZone address
+  space controller for the main DRAM window. This option requires
+  ``secure=on`` and TCG. The default is ``off``.
+
+tzc400-cpu-nsaids
+  Set the comma-separated TZC-400 non-secure access IDs assigned to vCPUs in
+  CPU index order when ``tzc400=on``. If this option is omitted, each vCPU uses
+  ``cpu-index & 0xf``. Because this is a comma-valued ``-machine`` property,
+  commas inside the value must be escaped by doubling them, for example
+  ``-machine virt,secure=on,tzc400=on,tzc400-cpu-nsaids=0,,1,,2,,3``.
+
 virtualization
   Set ``on``/``off`` to enable/disable emulating a guest CPU which implements the
   Arm Virtualization Extensions. The default is ``off``.

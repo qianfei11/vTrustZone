@@ -6,6 +6,7 @@
 #include <linux/fs.h>
 #include <linux/arm-smccc.h>
 #include <linux/ioctl.h>
+#include <linux/kernel.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -22,6 +23,10 @@
 #define QEMU_TZC400_E_ALIGN		-3
 
 #define QEMU_TZC400_IOCTL_MAGIC		'z'
+#define QEMU_TZC400_TEST_REGION		1
+#define QEMU_TZC400_TEST_FILTERS	BIT(0)
+#define QEMU_TZC400_SEC_ATTR_S_RDWR	3
+#define QEMU_TZC400_ALL_NSAIDS		0xffffffffU
 
 struct qemu_tzc400_alloc {
 	__u64 phys;
@@ -52,6 +57,7 @@ struct qemu_tzc400_touch {
 static DEFINE_MUTEX(qemu_tzc400_lock);
 static void *qemu_tzc400_page;
 static phys_addr_t qemu_tzc400_phys;
+static bool qemu_tzc400_region_active;
 
 static int qemu_tzc400_smc_errno(long ret)
 {
@@ -68,6 +74,60 @@ static int qemu_tzc400_smc_errno(long ret)
 	}
 }
 
+static int qemu_tzc400_smc_config_region(const struct qemu_tzc400_region *req)
+{
+	struct arm_smccc_res res;
+	void *smc_page;
+	phys_addr_t smc_phys;
+	int ret;
+
+	smc_page = (void *)get_zeroed_page(GFP_KERNEL);
+	if (!smc_page)
+		return -ENOMEM;
+
+	memcpy(smc_page, req, sizeof(*req));
+	smc_phys = virt_to_phys(smc_page);
+
+	arm_smccc_smc(QEMU_TZC400_SMC_CONFIG_REGION, smc_phys, sizeof(*req),
+		      0, 0, 0, 0, 0, &res);
+
+	ret = qemu_tzc400_smc_errno(res.a0);
+	free_page((unsigned long)smc_page);
+
+	return ret;
+}
+
+static bool qemu_tzc400_region_matches_test_page(
+	const struct qemu_tzc400_region *req)
+{
+	return qemu_tzc400_page && req->region == QEMU_TZC400_TEST_REGION &&
+	       req->filters == QEMU_TZC400_TEST_FILTERS &&
+	       req->base == qemu_tzc400_phys &&
+	       req->top == qemu_tzc400_phys + PAGE_SIZE - 1;
+}
+
+static int qemu_tzc400_relax_test_region_locked(void)
+{
+	struct qemu_tzc400_region req = {
+		.filters = QEMU_TZC400_TEST_FILTERS,
+		.region = QEMU_TZC400_TEST_REGION,
+		.base = qemu_tzc400_phys,
+		.top = qemu_tzc400_phys + PAGE_SIZE - 1,
+		.sec_attr = QEMU_TZC400_SEC_ATTR_S_RDWR,
+		.nsaid_permissions = QEMU_TZC400_ALL_NSAIDS,
+	};
+	int ret;
+
+	if (!qemu_tzc400_region_active)
+		return 0;
+
+	ret = qemu_tzc400_smc_config_region(&req);
+	if (!ret)
+		qemu_tzc400_region_active = false;
+
+	return ret;
+}
+
 static int qemu_tzc400_alloc_page(struct qemu_tzc400_alloc __user *argp)
 {
 	struct qemu_tzc400_alloc alloc;
@@ -82,7 +142,8 @@ static int qemu_tzc400_alloc_page(struct qemu_tzc400_alloc __user *argp)
 		}
 
 		qemu_tzc400_phys = virt_to_phys(qemu_tzc400_page);
-	} else {
+		qemu_tzc400_region_active = false;
+	} else if (!qemu_tzc400_region_active) {
 		memset(qemu_tzc400_page, 0, PAGE_SIZE);
 	}
 
@@ -104,27 +165,24 @@ out_unlock:
 static int qemu_tzc400_config_region(
 	const struct qemu_tzc400_region __user *argp)
 {
-	struct arm_smccc_res res;
 	struct qemu_tzc400_region req;
-	void *smc_page;
-	phys_addr_t smc_phys;
 	int ret;
 
 	if (copy_from_user(&req, argp, sizeof(req)))
 		return -EFAULT;
 
-	smc_page = (void *)get_zeroed_page(GFP_KERNEL);
-	if (!smc_page)
-		return -ENOMEM;
+	mutex_lock(&qemu_tzc400_lock);
+	if (!qemu_tzc400_region_matches_test_page(&req)) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
 
-	memcpy(smc_page, &req, sizeof(req));
-	smc_phys = virt_to_phys(smc_page);
+	ret = qemu_tzc400_smc_config_region(&req);
+	if (!ret)
+		qemu_tzc400_region_active = true;
 
-	arm_smccc_smc(QEMU_TZC400_SMC_CONFIG_REGION, smc_phys, sizeof(req),
-		      0, 0, 0, 0, 0, &res);
-
-	ret = qemu_tzc400_smc_errno(res.a0);
-	free_page((unsigned long)smc_page);
+out_unlock:
+	mutex_unlock(&qemu_tzc400_lock);
 
 	return ret;
 }
@@ -202,9 +260,16 @@ static void __exit qemu_tzc400_exit(void)
 
 	mutex_lock(&qemu_tzc400_lock);
 	if (qemu_tzc400_page) {
-		free_page((unsigned long)qemu_tzc400_page);
-		qemu_tzc400_page = NULL;
-		qemu_tzc400_phys = 0;
+		int ret = qemu_tzc400_relax_test_region_locked();
+
+		if (ret) {
+			pr_warn("qemu_tzc400: leaving test page allocated: TZC relax failed: %d\n",
+				ret);
+		} else {
+			free_page((unsigned long)qemu_tzc400_page);
+			qemu_tzc400_page = NULL;
+			qemu_tzc400_phys = 0;
+		}
 	}
 	mutex_unlock(&qemu_tzc400_lock);
 }

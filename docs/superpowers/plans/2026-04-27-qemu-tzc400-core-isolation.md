@@ -34,12 +34,23 @@ The resulting implementation target is functional access-control isolation in QE
 - TF-A already provides `tzc400_init()`, `tzc400_configure_region0()`, `tzc400_configure_region()`, `tzc400_set_action()`, and `tzc400_enable_filters()`.
 - OP-TEE already has `CFG_TZC400` support in `optee_os/core/arch/arm/plat-vexpress/main.c`, but `PLATFORM_FLAVOR_qemu_armv8a` lacks `TZC400_BASE`.
 
+## Current Repository Status
+
+As of 2026-04-27, this branch implements the full planned functional path:
+
+- QEMU provides the TZC-400 device model, register tests, `virt` machine wiring, secure FDT node, per-CPU `tzc-nsaid` property, and TCG propagation through `MemTxAttrs.requester_id`.
+- TF-A provides QEMU platform TZC-400 initialization and the SiP SMC interface used to configure regions from the normal world.
+- The build wrapper exposes `QEMU_TZC400=y`, passes TF-A/OP-TEE flags, enables the QEMU machine property, and rejects SBSA where the QEMU TZC base is not defined.
+- Linux exposes `/dev/qemu_tzc400` for the test flow, and `optee_examples/qemu_tzc_core_isolation` drives a core-allowed/core-denied isolation check.
+- The TZC-400 model includes an `addr-base` property so IOMMU offsets inside `VIRT_MEM` are checked and reported as guest physical addresses.
+- TZC-400 policy writes invalidate cached IOMMU translations before replaying allowed mappings, so stale TCG TLB entries cannot bypass a newly restricted region.
+
 ## File Structure
 
 ### QEMU
 
 - Create `qemu/include/hw/misc/tzc400.h`: QOM type, state struct, public accessor for the protected upstream MemoryRegion.
-- Create `qemu/hw/misc/tzc400.c`: register model, region matching, access checks, failure status, IOMMU translation, QOM realization.
+- Create `qemu/hw/misc/tzc400.c`: register model, region matching, access checks, failure status, IOMMU translation, QOM realization, and protected-window physical base handling.
 - Modify `qemu/hw/misc/meson.build`: add `tzc400.c` under `CONFIG_TZC400`.
 - Modify `qemu/hw/misc/Kconfig`: add `config TZC400`.
 - Modify `qemu/hw/misc/trace-events`: add tracepoints for register writes, access checks, and denials.
@@ -76,12 +87,13 @@ Use these constants consistently:
 #define QEMU_TZC400_REGIONS    9
 #define QEMU_TZC400_FILTERS    1
 #define QEMU_TZC400_ADDR_BITS  40
+#define QEMU_TZC400_MEM_BASE   0x40000000ULL
 ```
 
 Use these machine options:
 
 ```text
--machine virt,secure=on,tzc400=on,tzc400-cpu-nsaids=0,1,2,3
+-machine virt,secure=on,tzc400=on,tzc400-cpu-nsaids=0,,1,,2,,3
 ```
 
 Use this TF-A SMC interface:
@@ -807,6 +819,80 @@ ninja: Entering directory `qemu/build'
 
 and no compiler errors.
 
+## Task 2A: Fix TZC-400 Physical Address Matching
+
+**Files:**
+- Modify: `qemu/include/hw/misc/tzc400.h`
+- Modify: `qemu/hw/misc/tzc400.c`
+- Later use from: `qemu/hw/arm/virt.c`
+
+- [x] **Step 1: Add protected-window physical base to device state**
+
+In `qemu/include/hw/misc/tzc400.h`, add this field near `downstream`:
+
+```c
+    hwaddr addr_base;
+```
+
+- [x] **Step 2: Add the QOM property**
+
+In `qemu/hw/misc/tzc400.c`, extend `tzc400_properties[]`:
+
+```c
+    DEFINE_PROP_UINT64("addr-base", TZC400State, addr_base, 0),
+```
+
+- [x] **Step 3: Compare TZC regions against physical bus addresses**
+
+Add a helper:
+
+```c
+static hwaddr tzc400_bus_addr(TZC400State *s, hwaddr addr)
+{
+    return s->addr_base + addr;
+}
+```
+
+Then update `tzc400_translate()` so access checks and failure registers use the bus address:
+
+```c
+    hwaddr bus_addr = tzc400_bus_addr(s, addr);
+
+    allowed = tzc400_access_check(s, bus_addr, attrs, write);
+    if (!allowed) {
+        tzc400_record_failure(s, bus_addr, attrs, write);
+    }
+```
+
+Keep `.iova = addr` and `.translated_addr = addr`; only the policy lookup and fail reporting should use the guest physical address.
+
+- [x] **Step 4: Include the base in migration state**
+
+In `vmstate_tzc400.fields`, add:
+
+```c
+        VMSTATE_UINT64(addr_base, TZC400State),
+```
+
+- [x] **Step 5: Pass the base from `virt` when Task 4 wires the device**
+
+When creating the TZC-400 device in `qemu/hw/arm/virt.c`, set:
+
+```c
+        object_property_set_uint(OBJECT(vms->tzc400_dev), "addr-base",
+                                 vms->memmap[VIRT_MEM].base, &error_abort);
+```
+
+- [x] **Step 6: Rebuild the standalone device**
+
+Run:
+
+```bash
+ninja -C qemu/build qemu-system-aarch64
+```
+
+Expected: build completes with no errors.
+
 ## Task 3: Add Per-Core NSAID Plumbing in ARM TCG
 
 **Files:**
@@ -1037,6 +1123,8 @@ with:
         memory_region_add_subregion(vms->tzc400_ram, 0, machine->ram);
         object_property_set_link(OBJECT(vms->tzc400_dev), "downstream",
                                  OBJECT(vms->tzc400_ram), &error_abort);
+        object_property_set_uint(OBJECT(vms->tzc400_dev), "addr-base",
+                                 vms->memmap[VIRT_MEM].base, &error_abort);
         sysbus_realize(SYS_BUS_DEVICE(vms->tzc400_dev), &error_fatal);
         tzc = TZC400(vms->tzc400_dev);
 
@@ -1097,7 +1185,7 @@ Run:
 
 ```bash
 ninja -C qemu/build qemu-system-aarch64
-qemu/build/qemu-system-aarch64 -machine virt,secure=on,tzc400=on,tzc400-cpu-nsaids=0,1 -accel tcg -cpu max -smp 2 -m 512M -nographic -serial mon:stdio
+qemu/build/qemu-system-aarch64 -machine virt,secure=on,tzc400=on,tzc400-cpu-nsaids=0,,1 -accel tcg -cpu max -smp 2 -m 512M -nographic -serial mon:stdio
 ```
 
 Expected smoke output:
@@ -1283,7 +1371,7 @@ DECLARE_RT_SVC(qemu_tzc_svc,
 Run:
 
 ```bash
-make -f build/qemu_v8.mk QEMU_TZC400=y ARM_TF_CLEAN=y arm-tf
+make -C build -f qemu_v8.mk QEMU_TZC400=y ARM_TF_CLEAN=y arm-tf
 ```
 
 Expected:
@@ -1314,19 +1402,17 @@ In `build/qemu_v8.mk`:
 
 ```make
 QEMU_TZC400 ?= n
-QEMU_TZC400_MACHINE_PROPS =
 
 ifeq ($(QEMU_TZC400),y)
 OPTEE_OS_COMMON_FLAGS += CFG_TZC400=y
-ARM_TF_FLAGS += QEMU_TZC400=1
-QEMU_TZC400_MACHINE_PROPS = ,tzc400=on,tzc400-cpu-nsaids=0,1,2,3
+TF_A_FLAGS += QEMU_TZC400=1
 endif
 ```
 
 Change the existing machine line to:
 
 ```make
-QEMU_BASE_ARGS += -machine virt,acpi=off,secure=on,mte=$(QEMU_MTE),gic-version=$(QEMU_GIC_VERSION),virtualization=$(QEMU_VIRT)$(QEMU_TZC400_MACHINE_PROPS)
+QEMU_BASE_ARGS += -machine virt,acpi=off,secure=on,mte=$(QEMU_MTE),gic-version=$(QEMU_GIC_VERSION),virtualization=$(QEMU_VIRT)$(QEMU_MACHINE_TZC400_ARGS)
 ```
 
 - [ ] **Step 3: Build OP-TEE OS**
@@ -1334,7 +1420,7 @@ QEMU_BASE_ARGS += -machine virt,acpi=off,secure=on,mte=$(QEMU_MTE),gic-version=$
 Run:
 
 ```bash
-make -f build/qemu_v8.mk QEMU_TZC400=y OPTEE_OS_CLEAN=y optee-os
+make -C build -f qemu_v8.mk QEMU_TZC400=y OPTEE_OS_CLEAN=y optee-os
 ```
 
 Expected:
@@ -1350,7 +1436,7 @@ in the OP-TEE build command and no compile errors.
 Run:
 
 ```bash
-make -f build/qemu_v8.mk QEMU_TZC400=y run-only
+make -C build -f qemu_v8.mk QEMU_TZC400=y run-only
 ```
 
 Expected secure-world log contains:
@@ -1631,7 +1717,7 @@ clean:
 Run:
 
 ```bash
-make -f build/qemu_v8.mk QEMU_TZC400=y linux
+make -C build -f qemu_v8.mk QEMU_TZC400=y linux
 make -C optee_examples/qemu_tzc_core_isolation
 ```
 
@@ -1680,7 +1766,7 @@ with `/tzc400/ids` and `/tzc400/region-programming` passing.
 Run:
 
 ```bash
-make -f build/qemu_v8.mk QEMU_TZC400=y QEMU_SMP=4 all
+make -C build -f qemu_v8.mk QEMU_TZC400=y QEMU_SMP=4 all
 ```
 
 Expected:
@@ -1699,13 +1785,13 @@ and the build exits with status 0.
 Run:
 
 ```bash
-make -f build/qemu_v8.mk QEMU_TZC400=y QEMU_SMP=4 run-only
+make -C build -f qemu_v8.mk QEMU_TZC400=y QEMU_SMP=4 run-only
 ```
 
 Expected QEMU command contains:
 
 ```text
--machine virt,acpi=off,secure=on,tzc400=on,tzc400-cpu-nsaids=0,1,2,3
+-machine virt,acpi=off,secure=on,tzc400=on
 ```
 
 Expected secure-world log contains a TZC-400 probe and no wrong-ID panic.
@@ -1768,7 +1854,7 @@ TrustZone address controller
 
 The ``virt`` machine can expose an emulated TZC-400 when TrustZone is enabled:
 
-``-machine virt,secure=on,tzc400=on,tzc400-cpu-nsaids=0,1,2,3``
+``-machine virt,secure=on,tzc400=on,tzc400-cpu-nsaids=0,,1,,2,,3``
 
 The TZC-400 controls accesses to the main DRAM window at ``0x40000000``.
 Secure accesses use the secure read/write bits in each TZC region. Non-secure
@@ -1821,8 +1907,8 @@ Run these commands in order:
 ```bash
 ninja -C qemu/build qemu-system-aarch64
 meson test -C qemu/build tzc400-test --suite qtest-aarch64 --print-errorlogs
-make -f build/qemu_v8.mk QEMU_TZC400=y QEMU_SMP=4 all
-make -f build/qemu_v8.mk QEMU_TZC400=y QEMU_SMP=4 run-only
+make -C build -f qemu_v8.mk QEMU_TZC400=y QEMU_SMP=4 all
+make -C build -f qemu_v8.mk QEMU_TZC400=y QEMU_SMP=4 run-only
 ```
 
 Inside the guest:
