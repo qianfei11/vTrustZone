@@ -133,6 +133,11 @@ static bool tzc400_region_matches(TZC400Region *region, hwaddr addr)
     return addr >= region->base && addr <= region->top;
 }
 
+static hwaddr tzc400_bus_addr(TZC400State *s, hwaddr addr)
+{
+    return s->addr_base + addr;
+}
+
 static TZC400Region *tzc400_find_region(TZC400State *s, hwaddr addr)
 {
     int i;
@@ -493,6 +498,7 @@ static IOMMUTLBEntry tzc400_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     MemTxAttrs attrs = {};
     bool write = flags & IOMMU_WO;
     bool allowed;
+    hwaddr bus_addr = tzc400_bus_addr(s, addr);
 
     if (iommu_idx == TZC400_IOMMU_IDX_SECURE) {
         attrs.secure = true;
@@ -500,9 +506,9 @@ static IOMMUTLBEntry tzc400_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         attrs.requester_id = iommu_idx - TZC400_IOMMU_IDX_NS_BASE;
     }
 
-    allowed = tzc400_access_check(s, addr, attrs, write);
+    allowed = tzc400_access_check(s, bus_addr, attrs, write);
     if (!allowed) {
-        tzc400_record_failure(s, addr, attrs, write);
+        tzc400_record_failure(s, bus_addr, attrs, write);
     }
 
     return (IOMMUTLBEntry) {
@@ -570,6 +576,7 @@ static void tzc400_realize(DeviceState *dev, Error **errp)
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     TZC400State *s = TZC400(dev);
     uint64_t size;
+    hwaddr addr_mask;
 
     if (!s->downstream) {
         error_setg(errp, "TZC400 'downstream' link not set");
@@ -577,6 +584,15 @@ static void tzc400_realize(DeviceState *dev, Error **errp)
     }
 
     size = memory_region_size(s->downstream);
+    addr_mask = s->addr_width ? tzc400_addr_mask(s) :
+                MAKE_64BIT_MASK(0, TZC400_DEFAULT_ADDR_WIDTH);
+    if (!size || size - 1 > addr_mask || s->addr_base > addr_mask - (size - 1)) {
+        error_setg(errp,
+                   "TZC400 protected window base 0x%" HWADDR_PRIx
+                   " size 0x%" PRIx64 " exceeds address width",
+                   s->addr_base, size);
+        return;
+    }
 
     memory_region_init_iommu(&s->upstream, sizeof(s->upstream),
                              TYPE_TZC400_IOMMU_MEMORY_REGION, obj,
@@ -609,7 +625,7 @@ static const VMStateDescription vmstate_tzc400_region = {
 
 static const VMStateDescription vmstate_tzc400 = {
     .name = "tzc400",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(num_filters, TZC400State),
@@ -620,6 +636,7 @@ static const VMStateDescription vmstate_tzc400 = {
         VMSTATE_UINT32(speculation_ctrl, TZC400State),
         VMSTATE_UINT32(int_status, TZC400State),
         VMSTATE_UINT32(int_clear, TZC400State),
+        VMSTATE_UINT64_V(addr_base, TZC400State, 2),
         VMSTATE_UINT64_ARRAY(fail_addr, TZC400State, TZC400_MAX_FILTERS),
         VMSTATE_UINT32_ARRAY(fail_control, TZC400State, TZC400_MAX_FILTERS),
         VMSTATE_UINT32_ARRAY(fail_id, TZC400State, TZC400_MAX_FILTERS),
@@ -632,6 +649,7 @@ static const VMStateDescription vmstate_tzc400 = {
 static const Property tzc400_properties[] = {
     DEFINE_PROP_LINK("downstream", TZC400State, downstream,
                      TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_UINT64("addr-base", TZC400State, addr_base, 0),
 };
 
 MemoryRegion *tzc400_get_upstream(TZC400State *s)

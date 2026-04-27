@@ -35,6 +35,7 @@ typedef struct TZC400State {
     MemoryRegion *downstream;
     AddressSpace downstream_as;
     AddressSpace blocked_as;
+    hwaddr addr_base;
     qemu_irq irq[TZC400_MAX_FILTERS];
 
     uint8_t num_filters;
