@@ -131,7 +131,7 @@ Return values:
 
 - [ ] **Step 1: Write qtest scaffolding**
 
-Create `qemu/tests/qtest/tzc400-test.c` with two test groups: register identity/reset state and access-control behavior. Use a tiny qtest-only DMA master device if direct qtest memory helpers cannot pass `MemTxAttrs.requester_id`.
+Create `qemu/tests/qtest/tzc400-test.c` with two test groups for the first RED state: register identity/reset state and TZC region-permission register programming. Do not add a requester-aware DMA master in this task; plain qtest memory helpers do not carry `MemTxAttrs.requester_id`, and requester-ID access-control coverage is added in Task 2 with the TZC-400 device model.
 
 ```c
 /*
@@ -258,6 +258,7 @@ If `qemu/build` does not exist, run the QEMU configure command from Task 8 befor
 - Modify: `qemu/hw/misc/meson.build:117-119`
 - Modify: `qemu/hw/misc/Kconfig:119-127`
 - Modify: `qemu/hw/misc/trace-events`
+- Extend: `qemu/tests/qtest/tzc400-test.c` with requester-ID access-control coverage once the device exposes a requester-aware test path.
 
 - [ ] **Step 1: Define the public device interface**
 
