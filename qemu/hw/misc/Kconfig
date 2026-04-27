@@ -119,6 +119,9 @@ config MPS2_SCC
 config TZ_MPC
     bool
 
+config TZC400
+    bool
+
 config TZ_MSC
     bool
 

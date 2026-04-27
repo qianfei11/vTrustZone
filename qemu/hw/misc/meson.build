@@ -115,6 +115,7 @@ system_ss.add(when: 'CONFIG_MPS2_FPGAIO', if_true: files('mps2-fpgaio.c'))
 system_ss.add(when: 'CONFIG_MPS2_SCC', if_true: files('mps2-scc.c'))
 
 system_ss.add(when: 'CONFIG_TZ_MPC', if_true: files('tz-mpc.c'))
+system_ss.add(when: 'CONFIG_TZC400', if_true: files('tzc400.c'))
 system_ss.add(when: 'CONFIG_TZ_MSC', if_true: files('tz-msc.c'))
 system_ss.add(when: 'CONFIG_TZ_PPC', if_true: files('tz-ppc.c'))
 system_ss.add(when: 'CONFIG_IOTKIT_SECCTL', if_true: files('iotkit-secctl.c'))
