@@ -14,6 +14,9 @@ include plat/qemu/common/common.mk
 
 # Use the GICv2 driver on QEMU by default
 QEMU_USE_GIC_DRIVER	:= QEMU_GICV2
+QEMU_TZC400		?= 0
+$(eval $(call assert_boolean,QEMU_TZC400))
+$(eval $(call add_define,QEMU_TZC400))
 
 ifeq (${ARM_ARCH_MAJOR},7)
 # ARMv7 Qemu support in trusted firmware expects the Cortex-A15 model.
@@ -156,6 +159,13 @@ BL31_SOURCES		+=	drivers/arm/pl061/pl061_gpio.c		\
 				drivers/gpio/gpio.c			\
 				${PLAT_QEMU_COMMON_PATH}/qemu_pm.c	\
 				${PLAT_QEMU_COMMON_PATH}/topology.c
+
+ifeq (${QEMU_TZC400},1)
+BL31_SOURCES		+=	drivers/arm/tzc/tzc400.c		\
+				plat/arm/common/arm_tzc400.c		\
+				${PLAT_QEMU_PATH}/qemu_tzc_svc.c
+BL31_CPPFLAGS		+=	-DPLAT_XLAT_TABLES_DYNAMIC
+endif
 
 ifeq (${SDEI_SUPPORT}, 1)
 BL31_SOURCES		+=	plat/qemu/common/qemu_sdei.c

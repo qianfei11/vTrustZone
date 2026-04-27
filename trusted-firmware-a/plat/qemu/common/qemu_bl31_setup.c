@@ -8,6 +8,9 @@
 
 #include <common/bl_common.h>
 #include <drivers/arm/pl061_gpio.h>
+#if QEMU_TZC400
+#include <drivers/arm/tzc400.h>
+#endif
 #include <lib/gpt_rme/gpt_rme.h>
 #if TRANSFER_LIST
 #include <transfer_list.h>
@@ -302,10 +305,24 @@ static void qemu_gpio_init(void)
 #endif
 }
 
+#if QEMU_TZC400
+static void qemu_tzc400_setup(void)
+{
+	tzc400_init(PLAT_QEMU_TZC400_BASE);
+	tzc400_disable_filters();
+	tzc400_configure_region0(TZC_REGION_S_RDWR, 0xffffffffU);
+	tzc400_set_action(TZC_ACTION_ERR);
+	tzc400_enable_filters();
+}
+#endif
+
 void bl31_platform_setup(void)
 {
 	plat_qemu_gic_init();
 	qemu_gpio_init();
+#if QEMU_TZC400
+	qemu_tzc400_setup();
+#endif
 }
 
 unsigned int plat_get_syscnt_freq2(void)

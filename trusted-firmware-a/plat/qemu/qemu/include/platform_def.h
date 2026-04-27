@@ -9,6 +9,7 @@
 
 #include <arch.h>
 #include <common/tbbr/tbbr_img_def.h>
+#include <drivers/arm/tzc400.h>
 #include <lib/utils_def.h>
 #include <plat/common/common_def.h>
 
@@ -92,6 +93,19 @@
 #define SECURE_GPIO_SIZE		0x00001000
 #define SECURE_GPIO_POWEROFF		0
 #define SECURE_GPIO_RESET		1
+
+#define PLAT_QEMU_TZC400_BASE		ULL(0x090c0000)
+#define PLAT_ARM_TZC_BASE		PLAT_QEMU_TZC400_BASE
+#define PLAT_ARM_TZC_FILTERS		TZC_400_REGION_ATTR_FILTER_BIT_ALL
+#define PLAT_ARM_TZC_NS_DEV_ACCESS	0xffffffffU
+#define ARM_AP_TZC_DRAM1_BASE		SEC_DRAM_BASE
+#define ARM_EL3_TZC_DRAM1_END		(SEC_DRAM_BASE + SEC_DRAM_SIZE - 1U)
+#define ARM_L1_GPT_SIZE		0U
+#define ARM_NS_DRAM1_BASE		NS_DRAM0_BASE
+#define ARM_NS_DRAM1_END		(NS_DRAM0_BASE + NS_DRAM0_SIZE - 1U)
+#define ARM_TZC_NS_DRAM_S_ACCESS	TZC_REGION_S_RDWR
+#define ARM_DRAM2_BASE			(NS_DRAM0_BASE + NS_DRAM0_SIZE)
+#define ARM_DRAM2_END			(ARM_DRAM2_BASE + PAGE_SIZE - 1U)
 
 /* Load pageable part of OP-TEE 2MB above secure DRAM base */
 #define QEMU_OPTEE_PAGEABLE_LOAD_BASE	(SEC_DRAM_BASE + 0x00200000)
