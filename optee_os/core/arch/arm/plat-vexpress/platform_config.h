@@ -70,6 +70,7 @@
 #define GIC_BASE		0x08000000
 #define UART0_BASE		0x09000000
 #define UART1_BASE		0x09040000
+#define TZC400_BASE		0x090c0000
 
 #define IT_UART1		40
 #if defined(CFG_CORE_SEL2_SPMC)

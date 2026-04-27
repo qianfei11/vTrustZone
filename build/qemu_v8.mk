@@ -91,6 +91,17 @@ PAUTH ?= n
 # Option to configure Memory Tagging Extension
 MEMTAG ?= n
 
+# Option to enable the QEMU TZC-400 model and matching secure-world drivers
+QEMU_TZC400 ?= n
+
+ifeq ($(QEMU_TZC400),y)
+ifneq ($(PLAT_QEMU),virt)
+$(error QEMU_TZC400 requires PLAT_QEMU=virt)
+endif
+endif
+
+comma := ,
+
 include common.mk
 
 ################################################################################
@@ -212,6 +223,10 @@ TF_A_FLAGS += QEMU_USE_GIC_DRIVER=$(TFA_GIC_DRIVER)
 TF_A_FLAGS += BL32_RAM_LOCATION=tdram
 arm-tf: $(BL33_DEPS)
 endif # ifeq ($(PLAT_QEMU),virt)
+
+ifeq ($(QEMU_TZC400),y)
+TF_A_FLAGS += QEMU_TZC400=1
+endif
 
 ifeq ($(ARM_FIRMWARE_HANDOFF),y)
 TF_A_FLAGS += TRANSFER_LIST=1
@@ -470,6 +485,9 @@ endif
 # OP-TEE
 ################################################################################
 OPTEE_OS_COMMON_FLAGS += DEBUG=$(DEBUG) CFG_ARM_GICV3=$(GICV3)
+ifeq ($(QEMU_TZC400),y)
+OPTEE_OS_COMMON_FLAGS += CFG_TZC400=y
+endif
 OPTEE_OS_COMMON_FLAGS_SPMC_AT_EL_1 = CFG_CORE_SEL1_SPMC=y
 OPTEE_OS_COMMON_FLAGS_SPMC_AT_EL_2 = CFG_CORE_SEL2_SPMC=y
 OPTEE_OS_COMMON_FLAGS_SPMC_AT_EL_2 += CFG_ARM_GICV3=n CFG_CORE_HAFNIUM_INTC=y
@@ -667,6 +685,14 @@ else
 QEMU_MTE	= off
 endif
 
+QEMU_TZC400_CPU_NSAIDS ?=
+ifeq ($(QEMU_TZC400),y)
+QEMU_MACHINE_TZC400_ARGS := ,tzc400=on
+ifneq ($(strip $(QEMU_TZC400_CPU_NSAIDS)),)
+QEMU_MACHINE_TZC400_ARGS := $(QEMU_MACHINE_TZC400_ARGS),tzc400-cpu-nsaids=$(subst $(comma),$(comma)$(comma),$(strip $(QEMU_TZC400_CPU_NSAIDS)))
+endif
+endif
+
 QEMU_BASE_ARGS = -nographic
 QEMU_BASE_ARGS += -smp $(QEMU_SMP)
 QEMU_BASE_ARGS += -cpu $(QEMU_CPU)
@@ -677,7 +703,7 @@ QEMU_BASE_ARGS += -bios bl1.bin
 QEMU_BASE_ARGS += -initrd rootfs.cpio.gz
 QEMU_BASE_ARGS += -kernel Image
 QEMU_BASE_ARGS += -append 'console=ttyAMA0,38400 keep_bootcon root=/dev/vda2 $(QEMU_KERNEL_BOOTARGS)'
-QEMU_BASE_ARGS += -machine virt,acpi=off,secure=on,mte=$(QEMU_MTE),gic-version=$(QEMU_GIC_VERSION),virtualization=$(QEMU_VIRT)
+QEMU_BASE_ARGS += -machine virt,acpi=off,secure=on,mte=$(QEMU_MTE),gic-version=$(QEMU_GIC_VERSION),virtualization=$(QEMU_VIRT)$(QEMU_MACHINE_TZC400_ARGS)
 endif
 QEMU_BASE_ARGS += $(QEMU_XEN)
 QEMU_BASE_ARGS += $(QEMU_EXTRA_ARGS)
