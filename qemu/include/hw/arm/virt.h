@@ -75,6 +75,7 @@ enum {
     VIRT_UART1,
     VIRT_SECURE_MEM,
     VIRT_SECURE_GPIO,
+    VIRT_TZC400,
     VIRT_PCDIMM_ACPI,
     VIRT_ACPI_GED,
     VIRT_NVDIMM_ACPI,
@@ -144,6 +145,10 @@ struct VirtMachineState {
     FWCfgState *fw_cfg;
     PFlashCFI01 *flash[2];
     bool secure;
+    bool tzc400;
+    char *tzc400_cpu_nsaids;
+    DeviceState *tzc400_dev;
+    MemoryRegion *tzc400_ram;
     bool highmem;
     bool highmem_compact;
     bool highmem_ecam;

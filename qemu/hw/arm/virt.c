@@ -86,6 +86,7 @@
 #include "hw/virtio/virtio-md-pci.h"
 #include "hw/virtio/virtio-iommu.h"
 #include "hw/char/pl011.h"
+#include "hw/misc/tzc400.h"
 #include "qemu/guest-random.h"
 
 static GlobalProperty arm_virt_compat[] = {
@@ -183,6 +184,7 @@ static const MemMapEntry base_memmap[] = {
     [VIRT_NVDIMM_ACPI] =        { 0x09090000, NVDIMM_ACPI_IO_LEN},
     [VIRT_PVTIME] =             { 0x090a0000, 0x00010000 },
     [VIRT_SECURE_GPIO] =        { 0x090b0000, 0x00001000 },
+    [VIRT_TZC400] =             { 0x090c0000, 0x00010000 },
     [VIRT_MMIO] =               { 0x0a000000, 0x00000200 },
     /* ...repeating for a total of NUM_VIRTIO_TRANSPORTS, each of that size */
     [VIRT_PLATFORM_BUS] =       { 0x0c000000, 0x02000000 },
@@ -1651,6 +1653,67 @@ static void create_platform_bus(VirtMachineState *vms)
                                 sysbus_mmio_get_region(s, 0));
 }
 
+static bool virt_tzc400_parse_cpu_nsaids(VirtMachineState *vms,
+                                         uint16_t *nsaids, Error **errp)
+{
+    MachineState *machine = MACHINE(vms);
+    unsigned int cpus = machine->smp.cpus;
+    const char *value = vms->tzc400_cpu_nsaids ?: "";
+    char **entries;
+    unsigned int count;
+
+    if (!*value) {
+        for (unsigned int i = 0; i < cpus; i++) {
+            nsaids[i] = i & 0xf;
+        }
+        return true;
+    }
+
+    entries = g_strsplit(value, ",", -1);
+    count = g_strv_length(entries);
+    if (count != cpus) {
+        error_setg(errp,
+                   "tzc400-cpu-nsaids must provide exactly one TZC-400 NSAID "
+                   "per configured CPU: got %u entries for %u CPUs",
+                   count, cpus);
+        goto fail;
+    }
+
+    for (unsigned int i = 0; i < cpus; i++) {
+        uint64_t nsaid;
+        const char *endptr;
+
+        if (!entries[i][0]) {
+            error_setg(errp,
+                       "tzc400-cpu-nsaids contains an empty TZC-400 NSAID");
+            goto fail;
+        }
+
+        if (qemu_strtou64(entries[i], &endptr, 0, &nsaid) || *endptr) {
+            error_setg(errp,
+                       "tzc400-cpu-nsaids entry '%s' is not a valid "
+                       "TZC-400 NSAID", entries[i]);
+            goto fail;
+        }
+
+        if (nsaid > 15) {
+            error_setg(errp,
+                       "TZC-400 NSAID in tzc400-cpu-nsaids must be in "
+                       "range 0..15");
+            goto fail;
+        }
+
+        nsaids[i] = nsaid;
+    }
+
+    g_strfreev(entries);
+    return true;
+
+fail:
+    g_strfreev(entries);
+    return false;
+}
+
 static void create_tag_ram(MemoryRegion *tag_sysmem,
                            hwaddr base, hwaddr size,
                            const char *name)
@@ -1686,6 +1749,44 @@ static void create_secure_ram(VirtMachineState *vms,
         create_tag_ram(secure_tag_sysmem, base, size, "mach-virt.secure-tag");
     }
 
+    g_free(nodename);
+}
+
+static void create_tzc400(VirtMachineState *vms, MemoryRegion *sysmem)
+{
+    MachineState *machine = MACHINE(vms);
+    hwaddr mem_base = vms->memmap[VIRT_MEM].base;
+    hwaddr mem_size = memory_region_size(machine->ram);
+    hwaddr tzc_base = vms->memmap[VIRT_TZC400].base;
+    hwaddr tzc_size = vms->memmap[VIRT_TZC400].size;
+    SysBusDevice *sbd;
+    char *nodename;
+
+    vms->tzc400_ram = g_new(MemoryRegion, 1);
+    memory_region_init(vms->tzc400_ram, OBJECT(machine), "virt.tzc400-ram",
+                       mem_size);
+    memory_region_add_subregion(vms->tzc400_ram, 0, machine->ram);
+
+    vms->tzc400_dev = qdev_new(TYPE_TZC400);
+    object_property_set_link(OBJECT(vms->tzc400_dev), "downstream",
+                             OBJECT(vms->tzc400_ram), &error_abort);
+    qdev_prop_set_uint64(vms->tzc400_dev, "addr-base", mem_base);
+    sysbus_realize(SYS_BUS_DEVICE(vms->tzc400_dev), &error_fatal);
+
+    sbd = SYS_BUS_DEVICE(vms->tzc400_dev);
+    memory_region_add_subregion(sysmem, mem_base,
+                                tzc400_get_upstream(TZC400(vms->tzc400_dev)));
+    memory_region_add_subregion(sysmem, tzc_base,
+                                sysbus_mmio_get_region(sbd, 0));
+
+    nodename = g_strdup_printf("/tzc@%" PRIx64, tzc_base);
+    qemu_fdt_add_subnode(machine->fdt, nodename);
+    qemu_fdt_setprop_string(machine->fdt, nodename, "compatible",
+                            "arm,tzc-400");
+    qemu_fdt_setprop_sized_cells(machine->fdt, nodename, "reg",
+                                 2, tzc_base, 2, tzc_size);
+    qemu_fdt_setprop_string(machine->fdt, nodename, "status", "disabled");
+    qemu_fdt_setprop_string(machine->fdt, nodename, "secure-status", "okay");
     g_free(nodename);
 }
 
@@ -2119,6 +2220,7 @@ static void machvirt_init(MachineState *machine)
     bool has_ged = !vmc->no_ged;
     unsigned int smp_cpus = machine->smp.cpus;
     unsigned int max_cpus = machine->smp.max_cpus;
+    uint16_t *tzc400_nsaids = NULL;
 
     possible_cpus = mc->possible_cpu_arch_ids(machine);
 
@@ -2232,6 +2334,26 @@ static void machvirt_init(MachineState *machine)
         exit(1);
     }
 
+    if (vms->tzc400 && !vms->secure) {
+        error_report("mach-virt: tzc400 requires secure=on");
+        exit(1);
+    }
+
+    if (vms->tzc400 && !tcg_enabled()) {
+        error_report("mach-virt: tzc400 requires TCG");
+        exit(1);
+    }
+
+    if (vms->tzc400) {
+        Error *local_err = NULL;
+
+        tzc400_nsaids = g_new0(uint16_t, smp_cpus);
+        if (!virt_tzc400_parse_cpu_nsaids(vms, tzc400_nsaids, &local_err)) {
+            error_report_err(local_err);
+            exit(1);
+        }
+    }
+
     create_fdt(vms);
 
     assert(possible_cpus->len == max_cpus);
@@ -2294,6 +2416,11 @@ static void machvirt_init(MachineState *machine)
                                      OBJECT(secure_sysmem), &error_abort);
         }
 
+        if (vms->tzc400) {
+            object_property_set_int(cpuobj, "tzc-nsaid", tzc400_nsaids[n],
+                                    &error_fatal);
+        }
+
         if (vms->mte) {
             if (tcg_enabled()) {
                 /* Create the memory region only once, but link to all cpus. */
@@ -2346,6 +2473,7 @@ static void machvirt_init(MachineState *machine)
         qdev_realize(DEVICE(cpuobj), NULL, &error_fatal);
         object_unref(cpuobj);
     }
+    g_free(tzc400_nsaids);
 
     /* Now we've created the CPUs we can see if they have the hypvirt timer */
     vms->ns_el2_virt_timer_irq = ns_el2_virt_timer_present() &&
@@ -2354,8 +2482,12 @@ static void machvirt_init(MachineState *machine)
     fdt_add_timer_nodes(vms);
     fdt_add_cpu_nodes(vms);
 
-    memory_region_add_subregion(sysmem, vms->memmap[VIRT_MEM].base,
-                                machine->ram);
+    if (vms->tzc400) {
+        create_tzc400(vms, sysmem);
+    } else {
+        memory_region_add_subregion(sysmem, vms->memmap[VIRT_MEM].base,
+                                    machine->ram);
+    }
 
     virt_flash_fdt(vms, sysmem, secure_sysmem ?: sysmem);
 
@@ -2475,6 +2607,36 @@ static void virt_set_secure(Object *obj, bool value, Error **errp)
     VirtMachineState *vms = VIRT_MACHINE(obj);
 
     vms->secure = value;
+}
+
+static bool virt_get_tzc400(Object *obj, Error **errp)
+{
+    VirtMachineState *vms = VIRT_MACHINE(obj);
+
+    return vms->tzc400;
+}
+
+static void virt_set_tzc400(Object *obj, bool value, Error **errp)
+{
+    VirtMachineState *vms = VIRT_MACHINE(obj);
+
+    vms->tzc400 = value;
+}
+
+static char *virt_get_tzc400_cpu_nsaids(Object *obj, Error **errp)
+{
+    VirtMachineState *vms = VIRT_MACHINE(obj);
+
+    return g_strdup(vms->tzc400_cpu_nsaids);
+}
+
+static void virt_set_tzc400_cpu_nsaids(Object *obj, const char *value,
+                                       Error **errp)
+{
+    VirtMachineState *vms = VIRT_MACHINE(obj);
+
+    g_free(vms->tzc400_cpu_nsaids);
+    vms->tzc400_cpu_nsaids = g_strdup(value);
 }
 
 static bool virt_get_virt(Object *obj, Error **errp)
@@ -3211,6 +3373,19 @@ static void virt_machine_class_init(ObjectClass *oc, void *data)
                                                 "Set on/off to enable/disable the ARM "
                                                 "Security Extensions (TrustZone)");
 
+    object_class_property_add_bool(oc, "tzc400", virt_get_tzc400,
+                                   virt_set_tzc400);
+    object_class_property_set_description(oc, "tzc400",
+                                          "Set on/off to enable/disable the "
+                                          "TZC-400 TrustZone controller");
+
+    object_class_property_add_str(oc, "tzc400-cpu-nsaids",
+                                  virt_get_tzc400_cpu_nsaids,
+                                  virt_set_tzc400_cpu_nsaids);
+    object_class_property_set_description(oc, "tzc400-cpu-nsaids",
+                                          "Comma-separated TZC-400 NSAIDs "
+                                          "for each configured CPU");
+
     object_class_property_add_bool(oc, "virtualization", virt_get_virt,
                                    virt_set_virt);
     object_class_property_set_description(oc, "virtualization",
@@ -3339,6 +3514,8 @@ static void virt_instance_init(Object *obj)
      * boot UEFI blobs which assume no TrustZone support.
      */
     vms->secure = false;
+    vms->tzc400 = false;
+    vms->tzc400_cpu_nsaids = g_strdup("");
 
     /* EL2 is also disabled by default, for similar reasons */
     vms->virt = false;
