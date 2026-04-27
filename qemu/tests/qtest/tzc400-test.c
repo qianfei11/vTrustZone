@@ -52,17 +52,27 @@ static void test_tzc400_ids(void)
 
 static void test_tzc400_region_programming(void)
 {
-    tzc_writel(TZC_ACTION, 1);
-    tzc_writel(TZC_REGION_BASE_LOW(1), 0x40000000);
-    tzc_writel(TZC_REGION_BASE_HIGH(1), 0);
-    tzc_writel(TZC_REGION_TOP_LOW(1), 0x4000ffff);
-    tzc_writel(TZC_REGION_TOP_HIGH(1), 0);
-    tzc_writel(TZC_REGION_ATTRIBUTES(1), (3u << 30) | 1u);
-    tzc_writel(TZC_REGION_ID_ACCESS(1), (1u << 1) | (1u << (16 + 1)));
+    const uint32_t region_base_low = 0x40000000;
+    const uint32_t region_base_high = 0;
+    const uint32_t region_top_low = 0x4000ffff;
+    const uint32_t region_top_high = 0;
+    const uint32_t region_attrs = (3u << 30) | 1u;
+    const uint32_t region_id_access = (1u << 1) | (1u << (16 + 1));
 
-    g_assert_cmphex(tzc_readl(TZC_REGION_ATTRIBUTES(1)), ==, (3u << 30) | 1u);
-    g_assert_cmphex(tzc_readl(TZC_REGION_ID_ACCESS(1)), ==,
-                    (1u << 1) | (1u << (16 + 1)));
+    tzc_writel(TZC_ACTION, 1);
+    tzc_writel(TZC_REGION_BASE_LOW(1), region_base_low);
+    tzc_writel(TZC_REGION_BASE_HIGH(1), region_base_high);
+    tzc_writel(TZC_REGION_TOP_LOW(1), region_top_low);
+    tzc_writel(TZC_REGION_TOP_HIGH(1), region_top_high);
+    tzc_writel(TZC_REGION_ATTRIBUTES(1), region_attrs);
+    tzc_writel(TZC_REGION_ID_ACCESS(1), region_id_access);
+
+    g_assert_cmphex(tzc_readl(TZC_REGION_BASE_LOW(1)), ==, region_base_low);
+    g_assert_cmphex(tzc_readl(TZC_REGION_BASE_HIGH(1)), ==, region_base_high);
+    g_assert_cmphex(tzc_readl(TZC_REGION_TOP_LOW(1)), ==, region_top_low);
+    g_assert_cmphex(tzc_readl(TZC_REGION_TOP_HIGH(1)), ==, region_top_high);
+    g_assert_cmphex(tzc_readl(TZC_REGION_ATTRIBUTES(1)), ==, region_attrs);
+    g_assert_cmphex(tzc_readl(TZC_REGION_ID_ACCESS(1)), ==, region_id_access);
 }
 
 int main(int argc, char **argv)
