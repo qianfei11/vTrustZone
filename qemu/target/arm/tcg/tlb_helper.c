@@ -349,6 +349,7 @@ bool arm_cpu_tlb_fill_align(CPUState *cs, CPUTLBEntryFull *out, vaddr address,
                               &res, fi)) {
         res.f.extra.arm.pte_attrs = res.cacheattrs.attrs;
         res.f.extra.arm.shareability = res.cacheattrs.shareability;
+        res.f.attrs.requester_id = cpu->tzc_nsaid;
         *out = res.f;
         return true;
     }

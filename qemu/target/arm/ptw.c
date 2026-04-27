@@ -70,6 +70,17 @@ typedef struct S1Translate {
     void *out_host;
 } S1Translate;
 
+static MemTxAttrs arm_ptw_attrs(CPUARMState *env, ARMSecuritySpace space)
+{
+    ARMCPU *cpu = env_archcpu(env);
+
+    return (MemTxAttrs) {
+        .space = space,
+        .secure = arm_space_is_secure(space),
+        .requester_id = cpu->tzc_nsaid,
+    };
+}
+
 static bool get_phys_addr_nogpc(CPUARMState *env, S1Translate *ptw,
                                 vaddr address,
                                 MMUAccessType access_type, MemOp memop,
@@ -664,10 +675,7 @@ static uint32_t arm_ldl_ptw(CPUARMState *env, S1Translate *ptw,
         }
     } else {
         /* Page tables are in MMIO. */
-        MemTxAttrs attrs = {
-            .space = ptw->out_space,
-            .secure = arm_space_is_secure(ptw->out_space),
-        };
+        MemTxAttrs attrs = arm_ptw_attrs(env, ptw->out_space);
         AddressSpace *as = arm_addressspace(cs, attrs);
         MemTxResult result = MEMTX_OK;
 
@@ -710,10 +718,7 @@ static uint64_t arm_ldq_ptw(CPUARMState *env, S1Translate *ptw,
 #endif
     } else {
         /* Page tables are in MMIO. */
-        MemTxAttrs attrs = {
-            .space = ptw->out_space,
-            .secure = arm_space_is_secure(ptw->out_space),
-        };
+        MemTxAttrs attrs = arm_ptw_attrs(env, ptw->out_space);
         AddressSpace *as = arm_addressspace(cs, attrs);
         MemTxResult result = MEMTX_OK;
 
@@ -742,10 +747,7 @@ static uint64_t arm_casq_ptw(CPUARMState *env, uint64_t old_val,
     if (unlikely(!host)) {
         /* Page table in MMIO Memory Region */
         CPUState *cs = env_cpu(env);
-        MemTxAttrs attrs = {
-            .space = ptw->out_space,
-            .secure = arm_space_is_secure(ptw->out_space),
-        };
+        MemTxAttrs attrs = arm_ptw_attrs(env, ptw->out_space);
         AddressSpace *as = arm_addressspace(cs, attrs);
         MemTxResult result = MEMTX_OK;
         bool need_lock = !bql_locked();

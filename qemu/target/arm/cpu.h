@@ -913,6 +913,9 @@ struct ArchCPU {
     /* MemoryRegion to use for secure physical accesses */
     MemoryRegion *secure_memory;
 
+    /* Bus requester ID used by TrustZone address controllers. */
+    uint16_t tzc_nsaid;
+
     /* MemoryRegion to use for allocation tag accesses */
     MemoryRegion *tag_memory;
     MemoryRegion *secure_tag_memory;

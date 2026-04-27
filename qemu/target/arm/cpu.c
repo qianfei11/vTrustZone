@@ -1990,6 +1990,11 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
         return;
     }
 
+    if (cpu->tzc_nsaid > 15) {
+        error_setg(errp, "tzc-nsaid must be in range 0..15");
+        return;
+    }
+
     if (!cpu->gt_cntfrq_hz) {
         /*
          * 0 means "the board didn't set a value, use the default". (We also
@@ -2636,6 +2641,7 @@ static const Property arm_cpu_properties[] = {
                         mp_affinity, ARM64_AFFINITY_INVALID),
     DEFINE_PROP_INT32("node-id", ARMCPU, node_id, CPU_UNSET_NUMA_NODE_ID),
     DEFINE_PROP_INT32("core-count", ARMCPU, core_count, -1),
+    DEFINE_PROP_UINT16("tzc-nsaid", ARMCPU, tzc_nsaid, 0),
     /* True to default to the backward-compat old CNTFRQ rather than 1Ghz */
     DEFINE_PROP_BOOL("backcompat-cntfrq", ARMCPU, backcompat_cntfrq, false),
     DEFINE_PROP_BOOL("backcompat-pauth-default-use-qarma5", ARMCPU,
