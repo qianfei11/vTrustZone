@@ -1,0 +1,148 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        required: true
+        type: string
+      expand-memory:
+        required: true
+        type: boolean
+        default: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  QEMUV8_BUILD_FOLDER: /tmp/qemuv8
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Cleanup unused packages to free disk space
+        run: |
+          echo "Removing top large packages"
+          packages=(
+            google-chrome-stable microsoft-edge-stable firefox
+            azure-cli google-cloud-cli kubectl podman skopeo buildah snapd
+            temurin-8-jdk temurin-11-jdk temurin-17-jdk temurin-21-jdk
+            dotnet-sdk-8.0 dotnet-runtime-8.0 aspnetcore-runtime-8.0 aspnetcore-targeting-pack-8.0 netstandard-targeting-pack-2.1-8.0 dotnet-targeting-pack-8.0
+            llvm-16-dev llvm-17-dev llvm-18-dev
+            clang-tools-16 clang-tools-17 clang-tools-18
+            clang-tidy-16 clang-tidy-17 clang-tidy-18
+          )
+          for pkg in "${packages[@]}"; do
+              if dpkg-query -W -f='${Package}\n' $pkg 2>/dev/null | grep -q .; then
+                  echo "Package $pkg exists, removing..."
+                  sudo apt-get remove -y --purge --allow-change-held-packages --allow-remove-essential --no-install-recommends $pkg || true
+              else
+                  echo "Package $pkg not found, skipping."
+              fi
+          done
+          sudo apt-get autoremove -y || true
+          sudo apt-get clean || true
+
+          echo "Removing heavy preinstalled SDKs..."
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/hostedtoolcache
+          
+          echo "Disk usage after cleanup:"
+          df -h
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ccache
+            # cache build tool cache, helpful on arm64 host
+            ${{ env.QEMUV8_BUILD_FOLDER }}/out-aarch64-sdk
+            ${{ env.QEMUV8_BUILD_FOLDER }}/toolchains
+          key: builds-cache-${{ runner.arch }}${{ inputs.expand-memory && '-expand-ta-memory' || ''}}-${{ github.sha }}
+          restore-keys: |
+            builds-cache-${{ runner.arch }}
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install OP-TEE dependencies
+        run: |
+          sudo ./setup_optee_dependencies.sh
+          
+      - name: Checkout OP-TEE repository
+        run: |
+          mkdir -p ${{ env.QEMUV8_BUILD_FOLDER }} && 
+          cd ${{ env.QEMUV8_BUILD_FOLDER }} &&
+          repo init -u https://github.com/OP-TEE/manifest.git -m qemu_v8.xml &&
+          repo sync -j4 --no-clone-bundle
+
+      - name: Get Output Name
+        id: output_name
+        run: |
+          cd ${{ env.QEMUV8_BUILD_FOLDER }}/optee_os && \
+            OPTEE_TAG=optee-$(git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          OS_VERSION_TAG="ubuntu-24.04"
+          ARCH_TAG=$(uname -m)
+          SUFFIX_TAG=${{ inputs.expand-memory && '-expand-ta-memory' || '' }}
+          OUTPUT_NAME=$ARCH_TAG-$OPTEE_TAG-qemuv8-$OS_VERSION_TAG$SUFFIX_TAG
+
+          echo "name=$OUTPUT_NAME" > $GITHUB_OUTPUT
+
+      - name: Apply patches for Disabling WatchDog Test
+        run: |
+          (cd ${{ env.QEMUV8_BUILD_FOLDER }}/build && git apply $GITHUB_WORKSPACE/.patches/test_qemu/optee-build_disable_wd_test.patch)
+
+      - name: Apply patches to expand memory
+        if: ${{ inputs.expand-memory == true }}
+        run: |
+          (cd ${{ env.QEMUV8_BUILD_FOLDER }}/build && git apply $GITHUB_WORKSPACE/.patches/test_qemu/optee-build_expand_memory.patch)
+          (cd ${{ env.QEMUV8_BUILD_FOLDER }}/qemu && git apply $GITHUB_WORKSPACE/.patches/test_qemu/qemu-qemu_expand_secure_memory.patch)
+          (cd ${{ env.QEMUV8_BUILD_FOLDER }}/trusted-firmware-a && git apply $GITHUB_WORKSPACE/.patches/test_qemu/arm-atf_expand_secure_memory.patch)
+
+      - name: Apply patches to enable ssh
+        run: |
+          (cd ${{ env.QEMUV8_BUILD_FOLDER }}/build && git apply $GITHUB_WORKSPACE/.patches/test_qemu/optee-build_enable_ssh.patch)
+      # cd to the output folder first to avoid extra path in the tar file.
+      - name: Build And Pack
+        env:
+          OUTPUT_NAME: ${{ steps.output_name.outputs.name }}
+          OUTPUT_FOLDER: /tmp/${{ steps.output_name.outputs.name }}
+        run: |
+          cd ${{ env.QEMUV8_BUILD_FOLDER }} &&
+          cd build &&
+          make toolchains -j$(nproc) &&
+          make all -j$(nproc) &&
+
+          mkdir -p ${{ env.OUTPUT_FOLDER }} &&
+          cp ${{ env.QEMUV8_BUILD_FOLDER }}/out/bin/* ${{ env.OUTPUT_FOLDER }} &&
+          cp ${{ env.QEMUV8_BUILD_FOLDER }}/qemu/build/qemu-system-aarch64 ${{ env.OUTPUT_FOLDER }} &&
+
+          mkdir -p $GITHUB_WORKSPACE/out &&
+          cd ${{ env.OUTPUT_FOLDER }} &&
+          cd .. &&
+          tar -czvf $GITHUB_WORKSPACE/out/${{ env.OUTPUT_NAME }}.tar.gz ${{ env.OUTPUT_NAME }}
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.output_name.outputs.name }}
+          path: |
+            out/*
+          if-no-files-found: error

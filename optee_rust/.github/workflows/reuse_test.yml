@@ -1,0 +1,98 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: "[Workflow Call]Test"
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        required: true
+        type: string
+      container:
+        required: true
+        type: string
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Cross-compile and run unit-tests of (optee-utee and optee-teec) on host.
+  build-utee-teec:
+    runs-on: ${{ inputs.runs-on }}
+    container: ${{ inputs.container }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Building
+        run: |
+          # Setup Rust and toolchains
+          ./setup.sh
+          source "$HOME/.cargo/env"
+ 
+          # Build optee_os and optee_client for qemu_v8
+          ./build_optee_libraries.sh $HOME
+
+          # Setup environment
+          export OPTEE_DIR=$HOME
+          source environment
+
+          # Run unit tests
+          (cd optee-utee && cargo test --features no_panic_handler -vv)
+          (cd optee-teec && cargo test -vv)
+          (cd optee-utee-build && cargo test -vv)
+
+          # Build Rust optee-utee and optee-teec
+          (cd optee-utee && cargo build --target aarch64-unknown-linux-gnu -vv)
+          (cd optee-teec && cargo build --target aarch64-unknown-linux-gnu -vv)
+
+          # Clippy checks
+          (cd optee-utee && cargo clippy --target aarch64-unknown-linux-gnu -- -D warnings)
+          (cd optee-teec && cargo clippy --target aarch64-unknown-linux-gnu -- -D warnings)
+
+  build-and-test-examples-for-32bit-no-std-TAs:
+    uses: ./.github/workflows/reuse_host_build_and_qemu_run.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
+      container: ${{ inputs.container }}
+      std: false
+      ta_arch: arm
+
+  build-and-test-examples-for-64bit-no-std-TAs:
+    uses: ./.github/workflows/reuse_host_build_and_qemu_run.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
+      container: ${{ inputs.container }}
+      std: false
+      ta_arch: aarch64
+
+  build-and-test-examples-for-32bit-std-TAs:
+    uses: ./.github/workflows/reuse_host_build_and_qemu_run.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
+      container: ${{ inputs.container }}
+      std: true
+      ta_arch: arm
+
+  build-and-test-examples-for-64bit-std-TAs:
+    uses: ./.github/workflows/reuse_host_build_and_qemu_run.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
+      container: ${{ inputs.container }}
+      std: true
+      ta_arch: aarch64
