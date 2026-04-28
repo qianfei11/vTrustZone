@@ -1,0 +1,175 @@
+#!/usr/bin/expect -f
+#
+# Boot QEMU with the TZC-400 model enabled and run the guest-side
+# core-isolation fault test. The expected result is an allowed CPU write
+# followed by a denied CPU external abort and user process segfault.
+
+set quiet 0
+set timeout 300
+
+set myargs $argv
+while {[llength $myargs]} {
+	set myargs [lassign $myargs arg]
+	switch -exact -- $arg {
+		"--timeout"	{set myargs [lassign $myargs ::timeout]}
+		"-q"		{set ::quiet 1}
+		"--"		{}
+	}
+}
+
+proc log_info arg {
+	if {$::quiet == 1} { return }
+	puts -nonewline $arg
+	flush stdout
+}
+
+proc shutdown_qemu {} {
+	catch {send -- "\001x"}
+	catch {expect eof}
+}
+
+proc fail {msg {code 1}} {
+	log_info "!!! $msg\n"
+	shutdown_qemu
+	exit $code
+}
+
+proc expect_prompt {context} {
+	expect {
+		"Kernel panic" {
+			fail "Kernel panic while $context"
+		}
+		"# " {}
+		timeout {
+			fail "Timeout while $context" 2
+		}
+		eof {
+			fail "QEMU exited while $context"
+		}
+	}
+}
+
+proc run_guest_cmd {cmd fail_marker context} {
+	send -- "$cmd || echo $fail_marker\r"
+	expect {
+		$fail_marker {
+			fail "Guest command failed while $context"
+		}
+		"Kernel panic" {
+			fail "Kernel panic while $context"
+		}
+		"# " {}
+		timeout {
+			fail "Timeout while $context" 2
+		}
+		eof {
+			fail "QEMU exited while $context"
+		}
+	}
+}
+
+if {![info exists ::env(QEMU)] || ![info exists ::env(QEMU_CHECK_ARGS)]} {
+	puts stderr "QEMU and QEMU_CHECK_ARGS must be set"
+	exit 1
+}
+
+set allowed_cpu 1
+set denied_cpu 0
+set allowed_nsaid ""
+if {[info exists ::env(QEMU_TZC400_ALLOWED_CPU)]} {
+	set allowed_cpu $::env(QEMU_TZC400_ALLOWED_CPU)
+}
+if {[info exists ::env(QEMU_TZC400_DENIED_CPU)]} {
+	set denied_cpu $::env(QEMU_TZC400_DENIED_CPU)
+}
+if {[info exists ::env(QEMU_TZC400_ALLOWED_NSAID)]} {
+	set allowed_nsaid $::env(QEMU_TZC400_ALLOWED_NSAID)
+}
+
+set test_cmd "/tmp/tzc400/qemu_tzc_core_isolation $allowed_cpu $denied_cpu"
+if {$allowed_nsaid ne ""} {
+	append test_cmd " $allowed_nsaid"
+}
+
+log_user 0
+log_file -a -noappend "serial0.log"
+set secure_log [open "serial1.log" "w+"]
+close $secure_log
+
+log_info "Starting QEMU..."
+spawn sh -c "$::env(QEMU) $::env(QEMU_CHECK_ARGS)"
+expect {
+	"Kernel panic" {
+		fail "Kernel panic during boot"
+	}
+	"ogin:" {}
+	timeout {
+		fail "Timeout during boot" 2
+	}
+	eof {
+		fail "QEMU exited during boot"
+	}
+}
+send -- "root\r\r"
+expect_prompt "logging in"
+send -- "stty -echo\r"
+expect_prompt "disabling guest shell echo"
+log_info " done, guest is booted.\n"
+
+run_guest_cmd "export LD_LIBRARY_PATH=/lib:/lib/aarch64-linux-gnu:/usr/lib" \
+	"TZC400_TEST_ENV_FAILED" "setting LD_LIBRARY_PATH"
+run_guest_cmd "mkdir -p /mnt/host && mount -t 9p -o trans=virtio host /mnt/host" \
+	"TZC400_TEST_MOUNT_FAILED" "mounting host repo"
+run_guest_cmd "mkdir -p /tmp/tzc400 && cp /mnt/host/linux/drivers/misc/qemu_tzc400.ko /tmp/tzc400/ && cp /mnt/host/optee_examples/qemu_tzc_core_isolation/host/qemu_tzc_core_isolation /tmp/tzc400/ && chmod +x /tmp/tzc400/qemu_tzc_core_isolation" \
+	"TZC400_TEST_COPY_FAILED" "copying test artifacts"
+run_guest_cmd "insmod /tmp/tzc400/qemu_tzc400.ko" \
+	"TZC400_TEST_INSMOD_FAILED" "loading qemu_tzc400.ko"
+
+log_info "Running: $test_cmd\n"
+send -- "$test_cmd\r"
+
+set saw_allowed 0
+set saw_denied_start 0
+set saw_abort 0
+expect {
+	"allowed cpu write ok" {
+		set saw_allowed 1
+		exp_continue
+	}
+	"denied cpu read begins" {
+		set saw_denied_start 1
+		exp_continue
+	}
+	"denied cpu read unexpectedly ok" {
+		fail "Denied CPU read unexpectedly succeeded"
+	}
+	-re {[Ss]ynchronous external abort} {
+		set saw_abort 1
+		exp_continue
+	}
+	"Segmentation fault" {
+		if {$saw_allowed != 1} {
+			fail "Guest segfaulted before allowed CPU write completed"
+		}
+		if {$saw_denied_start != 1} {
+			fail "Guest segfaulted before denied CPU read started"
+		}
+		if {$saw_abort != 1} {
+			fail "Guest segfaulted without reporting synchronous external abort"
+		}
+	}
+	"Kernel panic" {
+		fail "Kernel panic during TZC-400 test"
+	}
+	timeout {
+		fail "Timeout during TZC-400 test" 2
+	}
+	eof {
+		fail "QEMU exited during TZC-400 test"
+	}
+}
+
+expect_prompt "waiting for shell after TZC-400 test"
+log_info "Status: PASS (allowed CPU write, denied CPU synchronous external abort)\n"
+shutdown_qemu
+exit 0

@@ -74,6 +74,11 @@ static const uint8_t tzc400_idregs[] = {
     0x0d, 0xf0, 0x05, 0xb1,
 };
 
+static bool tzc400_id_reg_offset(hwaddr offset)
+{
+    return offset >= A_PID4 && offset <= A_CID3 && (offset & 0x3) == 0;
+}
+
 static uint32_t tzc400_filter_mask(TZC400State *s)
 {
     return (1u << s->num_filters) - 1;
@@ -246,6 +251,13 @@ static MemTxResult tzc400_reg_read(void *opaque, hwaddr addr, uint64_t *data,
     uint64_t value = 0;
     unsigned region;
     hwaddr region_offset;
+
+    if (size == 1 && tzc400_id_reg_offset(addr)) {
+        value = tzc400_idregs[(addr - A_PID4) / 4];
+        trace_tzc400_reg_read(addr, value, size);
+        *data = value;
+        return MEMTX_OK;
+    }
 
     if (size != 4) {
         *data = 0;
@@ -465,9 +477,9 @@ static const MemoryRegionOps tzc400_reg_ops = {
     .read_with_attrs = tzc400_reg_read,
     .write_with_attrs = tzc400_reg_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 4,
+    .valid.min_access_size = 1,
     .valid.max_access_size = 4,
-    .impl.min_access_size = 4,
+    .impl.min_access_size = 1,
     .impl.max_access_size = 4,
 };
 
@@ -563,7 +575,9 @@ static void tzc400_reset(DeviceState *dev)
     s->num_regions = TZC400_DEFAULT_REGIONS;
     s->addr_width = TZC400_DEFAULT_ADDR_WIDTH;
     s->action = 0;
-    s->gate_keeper = 0;
+    s->gate_keeper = tzc400_filter_mask(s);
+    s->gate_keeper = FIELD_DP32(s->gate_keeper, GATE_KEEPER, OS,
+                                tzc400_filter_mask(s));
     s->speculation_ctrl = 0;
     s->int_status = 0;
     s->int_clear = 0;

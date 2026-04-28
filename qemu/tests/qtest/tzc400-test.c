@@ -11,6 +11,7 @@
 #define TZC_BUILD_CONFIG            0x000
 #define TZC_ACTION                  0x004
 #define TZC_GATE_KEEPER             0x008
+#define TZC_GATE_KEEPER_FILTER0_OPEN 0x00010001
 #define TZC_REGION_BASE_LOW(n)      (0x100 + ((n) * 0x20))
 #define TZC_REGION_BASE_HIGH(n)     (0x104 + ((n) * 0x20))
 #define TZC_REGION_TOP_LOW(n)       (0x108 + ((n) * 0x20))
@@ -30,6 +31,11 @@ static uint32_t tzc_readl(uint64_t offset)
     return qtest_readl(global_qtest, TZC400_BASE + offset);
 }
 
+static uint8_t tzc_readb(uint64_t offset)
+{
+    return qtest_readb(global_qtest, TZC400_BASE + offset);
+}
+
 static void tzc_writel(uint64_t offset, uint32_t value)
 {
     qtest_writel(global_qtest, TZC400_BASE + offset, value);
@@ -43,11 +49,16 @@ static void test_tzc400_ids(void)
                    (tzc_readl(TZC_CID3) << 24);
 
     g_assert_cmphex(cid, ==, 0xb105f00d);
+    g_assert_cmphex(tzc_readb(TZC_CID0), ==, 0x0d);
+    g_assert_cmphex(tzc_readb(TZC_CID1), ==, 0xf0);
+    g_assert_cmphex(tzc_readb(TZC_CID2), ==, 0x05);
+    g_assert_cmphex(tzc_readb(TZC_CID3), ==, 0xb1);
     g_assert_cmphex(tzc_readl(TZC_BUILD_CONFIG), ==,
                     ((QEMU_TZC400_FILTERS - 1) << 24) |
                     ((QEMU_TZC400_ADDR_BITS - 1) << 8) |
                     (QEMU_TZC400_REGIONS - 1));
-    g_assert_cmphex(tzc_readl(TZC_GATE_KEEPER), ==, 0);
+    g_assert_cmphex(tzc_readl(TZC_GATE_KEEPER), ==,
+                    TZC_GATE_KEEPER_FILTER0_OPEN);
 }
 
 static void test_tzc400_region_programming(void)

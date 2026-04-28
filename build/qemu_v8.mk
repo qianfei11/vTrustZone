@@ -693,6 +693,15 @@ QEMU_MACHINE_TZC400_ARGS := $(QEMU_MACHINE_TZC400_ARGS),tzc400-cpu-nsaids=$(subs
 endif
 endif
 
+QEMU_TZC400_CHECK_SMP ?= 2
+QEMU_TZC400_CHECK_CPU_NSAIDS ?= 0,1
+QEMU_TZC400_ALLOWED_CPU ?= 1
+QEMU_TZC400_DENIED_CPU ?= 0
+QEMU_TZC400_ALLOWED_NSAID ?=
+QEMU_TZC400_TIMEOUT ?= 300
+QEMU_TZC400_TEST_HOST := $(OPTEE_EXAMPLES_PATH)/qemu_tzc_core_isolation/host/qemu_tzc_core_isolation
+QEMU_TZC400_TEST_KO := $(LINUX_PATH)/drivers/misc/qemu_tzc400.ko
+
 QEMU_BASE_ARGS = -nographic
 QEMU_BASE_ARGS += -smp $(QEMU_SMP)
 QEMU_BASE_ARGS += -cpu $(QEMU_CPU)
@@ -766,6 +775,11 @@ ifeq ($(XEN_BOOT),y)
 QEMU_CHECK_ARGS += -fsdev local,id=fsdev0,path=../..,security_model=none -device virtio-9p-device,fsdev=fsdev0,mount_tag=host
 endif
 
+QEMU_TZC400_CHECK_ARGS = $(QEMU_BASE_ARGS) $(QEMU_SCMI_ARGS)
+QEMU_TZC400_CHECK_ARGS += -serial mon:stdio -serial file:serial1.log
+QEMU_TZC400_CHECK_ARGS += -fsdev local,id=fsdev0,path=$(ROOT),security_model=none
+QEMU_TZC400_CHECK_ARGS += -device virtio-9p-device,fsdev=fsdev0,mount_tag=host
+
 check: $(CHECK_DEPS)
 	ln -sf $(ROOT)/out-br/images/rootfs.cpio.gz $(BINARIES_PATH)/
 	cd $(BINARIES_PATH) && \
@@ -785,6 +799,46 @@ check: $(CHECK_DEPS)
 		fi; false)
 
 check-only: check
+
+.PHONY: check-tzc400-core-isolation _check-tzc400-core-isolation qemu-tzc400-test-artifacts
+check-tzc400-core-isolation:
+	$(MAKE) -f qemu_v8.mk QEMU_TZC400=y \
+		QEMU_SMP=$(QEMU_TZC400_CHECK_SMP) \
+		QEMU_TZC400_CPU_NSAIDS="$(QEMU_TZC400_CHECK_CPU_NSAIDS)" \
+		_check-tzc400-core-isolation
+
+qemu-tzc400-test-artifacts: $(QEMU_TZC400_TEST_KO) $(QEMU_TZC400_TEST_HOST)
+
+$(QEMU_TZC400_TEST_KO): linux
+	rel="$$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' $(LINUX_PATH)/include/generated/utsrelease.h)"; \
+	base="$$($(MAKE) --no-print-directory -s -C $(LINUX_PATH) ARCH=arm64 kernelversion)"; \
+	local="$${rel#$$base}"; \
+	$(MAKE) -C $(LINUX_PATH) $(LINUX_COMMON_FLAGS) LOCALVERSION="$$local" \
+		CONFIG_QEMU_TZC400_TEST=m KBUILD_MODPOST_WARN=1 \
+		drivers/misc/qemu_tzc400.ko
+
+$(QEMU_TZC400_TEST_HOST): $(OPTEE_EXAMPLES_PATH)/qemu_tzc_core_isolation/host/main.c
+	$(MAKE) -C $(OPTEE_EXAMPLES_PATH)/qemu_tzc_core_isolation \
+		HOST_CROSS_COMPILE="$(CCACHE)$(AARCH$(COMPILE_NS_USER)_CROSS_COMPILE)"
+
+_check-tzc400-core-isolation: all qemu-tzc400-test-artifacts
+	ln -sf $(ROOT)/out-br/images/rootfs.cpio.gz $(BINARIES_PATH)/
+	cd $(BINARIES_PATH) && \
+		export QEMU=$(QEMU_BIN) && \
+		export QEMU_CHECK_ARGS="$(QEMU_TZC400_CHECK_ARGS)" && \
+		export QEMU_TZC400_ALLOWED_CPU=$(QEMU_TZC400_ALLOWED_CPU) && \
+		export QEMU_TZC400_DENIED_CPU=$(QEMU_TZC400_DENIED_CPU) && \
+		export QEMU_TZC400_ALLOWED_NSAID="$(QEMU_TZC400_ALLOWED_NSAID)" && \
+		expect $(ROOT)/build/qemu-tzc400-core-isolation.exp -- \
+			--timeout $(QEMU_TZC400_TIMEOUT) || \
+		(if [ "$(DUMP_LOGS_ON_ERROR)" ]; then \
+			echo "== $$PWD/serial0.log:"; \
+			cat serial0.log; \
+			echo "== end of $$PWD/serial0.log:"; \
+			echo "== $$PWD/serial1.log:"; \
+			cat serial1.log; \
+			echo "== end of $$PWD/serial1.log:"; \
+		fi; false)
 
 check-clean:
 	rm -f serial0.log serial1.log
