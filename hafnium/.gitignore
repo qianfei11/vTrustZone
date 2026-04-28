@@ -1,0 +1,27 @@
+out/
+.repo/
+docs/build
+.venv
+
+# Ignore project/ subfolders which are not part of the public Hafnium tree.
+# When these are checked out using a `repo` manifest Git otherwise treats them
+# as untracked files and the repository as dirty.
+!project/
+project/*/
+!project/reference/
+
+# Ctags
+tags
+
+# Used to pin dependencies by Poetry tool
+poetry.lock
+
+.vscode
+
+# Node.js dependencies
+node_modules/
+
+# Ignore Shrinkwrap related dynamic_overlay.yaml
+tools/shrinkwrap/configs/kokoro/fvp_hf_dynamic_overlay.yaml
+
+*__pycache__*

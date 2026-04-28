@@ -1,0 +1,31 @@
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  google-runtime-int,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -clang-analyzer-valist.Uninitialized,
+  -misc-include-cleaner,
+  -misc-redundant-expression,
+  -modernize-deprecated-headers,
+  -modernize-macro-to-enum,
+  -modernize-use-nullptr,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-implicit-bool-conversion,
+  -readability-math-missing-parentheses,
+  -readability-suspicious-call-argument,
+
+ExcludeHeaderFilterRegex: '^third_party/.*'
+
+FormatStyle: file
+WarningsAsErrors: '*'
+CheckOptions:
+  - key: bugprone-reserved-identifier.AllowedIdentifiers
+    value: "__stack_chk_guard;__stack_chk_fail"

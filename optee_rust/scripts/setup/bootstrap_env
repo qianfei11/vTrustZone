@@ -1,0 +1,38 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+export TEACLAVE_TOOLCHAIN_BASE=${TEACLAVE_TOOLCHAIN_BASE:-/opt/teaclave}
+
+# Rust and Cargo environment (custom locations instead of $HOME)
+export RUSTUP_HOME=${TEACLAVE_TOOLCHAIN_BASE}/rustup
+export CARGO_HOME=${TEACLAVE_TOOLCHAIN_BASE}/cargo
+
+export OPTEE_DIR=${TEACLAVE_TOOLCHAIN_BASE}/optee
+
+export OPTEE_OS_DIR=${OPTEE_DIR}/optee_os
+export OPTEE_CLIENT_DIR=${OPTEE_DIR}/optee_client
+
+export IMG_DIRECTORY=${TEACLAVE_TOOLCHAIN_BASE}/images
+
+export IMG_VERSION="$(uname -m)-optee-${OPTEE_VERSION}-qemuv8-ubuntu-24.04"
+export NEED_EXPANDED_MEM="${NEED_EXPANDED_MEM:-true}"
+
+if [ "$NEED_EXPANDED_MEM" = true ]; then
+    export IMG_NAME="${IMG_VERSION}-expand-ta-memory"
+else
+    export IMG_NAME="$IMG_VERSION"
+fi

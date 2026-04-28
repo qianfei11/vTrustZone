@@ -1,0 +1,40 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+*.rs.bk
+.user_ta_header.o.d
+target/
+/optee/toolchains
+/out
+Cargo.lock
+
+rust/
+
+# Allow tracking Cargo.lock in std examples
+!examples/message_passing_interface-rs/ta/Cargo.lock
+!examples/secure_db_abstraction-rs/ta/Cargo.lock
+!examples/serde-rs/ta/Cargo.lock
+!examples/tls_client-rs/ta/Cargo.lock
+!examples/tls_server-rs/ta/Cargo.lock
+!projects/web3/eth_wallet/ta/Cargo.lock
+
+# Allow tracking Cargo.lock for cargo-optee tool
+!cargo-optee/Cargo.lock
+
+# NixOS
+.direnv/
+.envrc

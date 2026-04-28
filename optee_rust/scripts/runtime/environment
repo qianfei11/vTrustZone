@@ -1,0 +1,103 @@
+#!/bin/bash
+
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# =============================================================================
+# config/environment (Main configuration - loads active configs)
+# =============================================================================
+
+# Get config script directory
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")/config"
+
+echo "Loading OP-TEE environment configuration..."
+
+# Validate required environment variables from bootstrap_env
+: "${TEACLAVE_TOOLCHAIN_BASE:?TEACLAVE_TOOLCHAIN_BASE must be set - directory where Teaclave toolchain is installed}"
+: "${OPTEE_DIR:?OPTEE_DIR must be set - directory where OPTEE will be built}"
+: "${OPTEE_OS_DIR:?OPTEE_OS_DIR must be set - directory where OPTEE OS will be built}"
+: "${OPTEE_CLIENT_DIR:?OPTEE_CLIENT_DIR must be set - directory where OPTEE Client will be built}"
+: "${IMG_DIRECTORY:?IMG_DIRECTORY must be set - directory where images will be stored}"
+: "${IMG_NAME:?IMG_NAME must be set - name of the image to download}"
+: "${RUSTUP_HOME:?RUSTUP_HOME must be set - directory where rustup is installed}"
+: "${CARGO_HOME:?CARGO_HOME must be set - directory where cargo is installed}"
+
+# Set up Rust environment (source cargo/env for PATH)
+if [ -f "${CARGO_HOME}/env" ]; then
+    source ${CARGO_HOME}/env
+else
+    echo "Error: Cargo environment not found at ${CARGO_HOME}/env" >&2
+    echo "This indicates rustup installation might not be properly done by the docker build routine" >&2
+    exit 1
+fi
+
+# Check if active configurations exist, set defaults if not
+if [ ! -f "$SCRIPT_DIR/ta/active" ]; then
+    echo "No active TA configuration found, setting default to no-std/aarch64"
+    (cd "$SCRIPT_DIR/ta" && ln -sf "no-std/aarch64" active)
+fi
+
+if [ ! -f "$SCRIPT_DIR/host/active" ]; then
+    echo "No active Host configuration found, setting default to aarch64"
+    (cd "$SCRIPT_DIR/host" && ln -sf "aarch64" active)
+fi
+
+# Load active TA configuration
+source "$SCRIPT_DIR/ta/active"
+
+# Load active Host configuration  
+source "$SCRIPT_DIR/host/active"
+
+# Validate OP-TEE directories exist
+if [ ! -d "$TA_DEV_KIT_DIR" ]; then
+    echo "Error: TA_DEV_KIT_DIR=$TA_DEV_KIT_DIR does not exist" >&2
+    exit 1
+fi
+
+if [ ! -d "$OPTEE_CLIENT_EXPORT" ]; then
+    echo "Error: OPTEE_CLIENT_EXPORT=$OPTEE_CLIENT_EXPORT does not exist" >&2
+    exit 1
+fi
+
+# Setup QEMU shared directory
+export QEMU_HOST_SHARE_DIR="${TEACLAVE_TOOLCHAIN_BASE}/shared"
+
+if [ -d "$QEMU_HOST_SHARE_DIR" ]; then
+    echo "QEMU shared directory already exists: $QEMU_HOST_SHARE_DIR"
+else
+    echo "Creating QEMU shared directory: $QEMU_HOST_SHARE_DIR"
+    mkdir -p "$QEMU_HOST_SHARE_DIR/host"
+    mkdir -p "$QEMU_HOST_SHARE_DIR/ta"
+    mkdir -p "$QEMU_HOST_SHARE_DIR/plugin"
+fi
+
+# Show configuration summary
+echo "=== OP-TEE Environment Configuration ==="
+echo "TA:   $(readlink "$SCRIPT_DIR/ta/active")"
+echo "Host: $(readlink "$SCRIPT_DIR/host/active")"
+echo ""
+echo "TA Configuration:"
+echo "  TARGET_TA: $TARGET_TA"
+echo "  CROSS_COMPILE_TA: $CROSS_COMPILE_TA"
+echo "  TA_DEV_KIT_DIR: $TA_DEV_KIT_DIR"
+echo ""
+echo "Host Configuration:"
+echo "  TARGET_HOST: $TARGET_HOST"
+echo "  CROSS_COMPILE_HOST: $CROSS_COMPILE_HOST"
+echo "  OPTEE_CLIENT_EXPORT: $OPTEE_CLIENT_EXPORT"
+echo ""
+echo "QEMU Shared Directory: $QEMU_HOST_SHARE_DIR"
